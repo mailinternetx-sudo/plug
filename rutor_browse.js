@@ -3,17 +3,18 @@
 
     // ================================================
     // Плагин V10 v3 (улучшенная версия)
-    // - Кнопка вверху левого меню
+    // - Кнопка в левом меню между «Главная» и «Лента»
     // - Надёжный парсинг rutor.info
+    // - Кэширование страниц
     // - Пагинация и обработка ошибок
-    // - Совместимость с TorrServer
     // ================================================
 
     // ================= НАСТРОЙКИ =================
-    var PROXY = 'https://corsproxy.io/?';   // при пустом значении – прямой запрос
+    var PROXY = 'https://corsproxy.io/?';   // можно заменить или оставить пустым
     var ITEMS_PER_PAGE = 30;                // элементов на странице
+    var CACHE_TTL = 10 * 60 * 1000;         // кэш на 10 минут
 
-    // Категории (можно менять/добавлять)
+    // Категории rutor.info
     var CATEGORIES = [
         { name: 'Топ торренты за 24 часа', url: 'https://rutor.info/top' },
         { name: 'Зарубежные фильмы',       url: 'https://rutor.info/browse/155/1/0/0' },
@@ -23,27 +24,42 @@
         { name: 'Телевизор',               url: 'https://rutor.info/browse/159/1/0/0' }
     ];
 
+    // Простой кэш в памяти
+    var cache = {};
+
+    function getCached(url) {
+        var now = Date.now();
+        if (cache[url] && (now - cache[url].timestamp < CACHE_TTL)) {
+            return cache[url].data;
+        }
+        return null;
+    }
+
+    function setCached(url, data) {
+        cache[url] = { data: data, timestamp: Date.now() };
+    }
+
     // =============== УЛУЧШЕННЫЙ ПАРСИНГ ===============
     function parseTorrents(html) {
         var items = [];
-        // Ищем все строки таблицы с раздачей
+        // Ищем строки таблицы: tr с классами tTr, gai, gaia и т.п.
         var rows = html.match(/<tr[^>]*class="(?:tTr|gai?a?)"[^>]*>[\s\S]*?<\/tr>/gi);
         if (!rows) return items;
 
         for (var i = 0; i < rows.length; i++) {
             var row = rows[i];
-            // ID торрента из ссылки /torrent/12345
+            // ID торрента
             var idMatch = row.match(/<a[^>]*href="\/torrent\/(\d+)"[^>]*>/i);
             if (!idMatch) continue;
             var id = idMatch[1];
             var torrentUrl = 'https://rutor.info/download/' + id + '.torrent';
 
-            // Название раздачи (внутри <a> после иконки)
+            // Название раздачи
             var titleMatch = row.match(/<a[^>]*href="\/torrent\/\d+"[^>]*>([\s\S]*?)<\/a>/i);
             var title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Без названия';
             title = title.replace(/\s+/g, ' ');
 
-            // Размер и сидеры (опционально – добавим в описание)
+            // Размер и сидеры (для описания)
             var sizeMatch = row.match(/<td[^>]*align="center"[^>]*>([\d.]+ [МГБ]+)/i);
             var size = sizeMatch ? sizeMatch[1] : '';
             var seedMatch = row.match(/<td[^>]*align="center"[^>]*>\s*(\d+)\s*<\/td>/i);
@@ -54,7 +70,7 @@
 
             items.push({
                 title: title,
-                poster: '',          // rutor не даёт постеров в списке
+                poster: '',
                 torrent: torrentUrl,
                 description: description,
                 info: info,
@@ -64,11 +80,18 @@
         return items;
     }
 
-    // =============== ЗАГРУЗКА СТРАНИЦЫ ===============
+    // =============== ЗАГРУЗКА СТРАНИЦЫ (с кэшем) ===============
     function loadPage(url, callback, errorCallback) {
+        var cached = getCached(url);
+        if (cached) {
+            callback(cached);
+            return;
+        }
+
         var fullUrl = PROXY ? PROXY + encodeURIComponent(url) : url;
         Lampa.Network.silent(fullUrl, function (html) {
             var items = parseTorrents(html);
+            setCached(url, items);
             callback(items);
         }, function (err) {
             console.error('V10 v3 ошибка загрузки:', err);
@@ -86,7 +109,7 @@
 
         onStart: function (data) {
             this.activity = data.activity;
-            var body = this.activity.render().html(
+            this.activity.render().html(
                 '<div class="activity__body" style="padding:1.2em 0">' +
                     '<div id="v10-tabs" style="margin-bottom:1.5em"></div>' +
                     '<div id="v10-list" class="items-line"></div>' +
@@ -209,21 +232,29 @@
             });
         },
 
-        onDestroy: function () {
-            // очистка при закрытии
-        }
+        onDestroy: function () {}
     };
 
-    // =============== ДОБАВЛЕНИЕ КНОПКИ В МЕНЮ (НАВЕРХ) ===============
+    // =============== ВСТАВКА КНОПКИ МЕЖДУ «ГЛАВНАЯ» И «ЛЕНТА» ===============
     function addMenuButton() {
         Lampa.Listener.follow('menu', function (e) {
             if (e.type !== 'complite' && e.type !== 'update') return;
 
             var menuContainer = e.object.activity.render().find('.menu__list, .left__menu, .sidebar__list, .menu-list');
             if (menuContainer.length === 0) return;
-
             if (menuContainer.find('.v10-v3-btn').length > 0) return;
 
+            // Находим кнопку «Главная» (обычно первый элемент)
+            var mainButton = menuContainer.find('.menu__item').first();
+            // Находим кнопку «Лента» (ищем по тексту)
+            var feedButton = null;
+            menuContainer.find('.menu__item').each(function () {
+                if ($(this).find('.menu__text').text().trim() === 'Лента') {
+                    feedButton = $(this);
+                }
+            });
+
+            // Создаём нашу кнопку
             var btnHTML = 
                 '<div class="menu__item selector v10-v3-btn">' +
                     '<div class="menu__ico"><span style="font-size:22px;line-height:1">🎬</span></div>' +
@@ -239,8 +270,17 @@
                 });
             });
 
-            // === ВСТАВЛЯЕМ КНОПКУ В НАЧАЛО МЕНЮ ===
-            menuContainer.prepend(btn);
+            // Вставляем после «Главная», но перед «Лента»
+            if (feedButton && mainButton) {
+                // Если есть «Лента», вставляем перед ней
+                feedButton.before(btn);
+            } else if (mainButton) {
+                // Иначе после «Главная»
+                mainButton.after(btn);
+            } else {
+                // На крайний случай — в конец
+                menuContainer.append(btn);
+            }
         });
     }
 
@@ -249,6 +289,6 @@
         window.v10_v3_loaded = true;
         Lampa.Component.add('v10_v3', V10Component);
         addMenuButton();
-        console.log('%c✅ Плагин V10 v3 улучшен. Кнопка вверху меню. Пагинация активна.', 'color:#00ff00;font-weight:bold');
+        console.log('%c✅ Плагин V10 v3 загружен. Кнопка между «Главная» и «Лента». Кэширование активно.', 'color:#00ff00;font-weight:bold');
     }
 })();
