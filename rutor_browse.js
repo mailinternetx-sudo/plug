@@ -1,72 +1,58 @@
 /**
- * Rutor Plugin для Lampa (TV-версия) с поддержкой постеров и пагинации
- * Использует TorrServer как прокси для обхода CORS и блокировок
- * @version 2.0
+ * Rutor Plugin for Lampa (TV)
+ * Версия 2.1 – исправлена кнопка меню, удалены нестандартные селекторы
  */
 
 (function() {
     // === КОНФИГУРАЦИЯ ===
     const BASE_URL = 'https://rutor.info';
-    // Если rutor заблокирован, можно использовать зеркало:
-    // const BASE_URL = 'https://rutor2.torrent';
-
-    // Категории (id, отображаемое название, путь, параметр пагинации)
     const CATEGORIES = [
-        { id: 'top', title: '🔥 Топ торренты за 24 часа', url: '/top', pageParam: '' },
-        { id: 'foreign_films', title: '🎬 Зарубежные фильмы', url: '/films/foreign/', pageParam: 'page' },
-        { id: 'russian_films', title: '🇷🇺 Наши фильмы', url: '/films/russian/', pageParam: 'page' },
-        { id: 'foreign_series', title: '📺 Зарубежные сериалы', url: '/series/foreign/', pageParam: 'page' },
-        { id: 'russian_series', title: '🇷🇺 Наши сериалы', url: '/series/russian/', pageParam: 'page' },
-        { id: 'tv', title: '📡 Телевизор (передачи)', url: '/tv/', pageParam: 'page' }
+        { id: 'top', title: '🔥 Топ торренты за 24 часа', url: '/top' },
+        { id: 'foreign_films', title: '🎬 Зарубежные фильмы', url: '/films/foreign/' },
+        { id: 'russian_films', title: '🇷🇺 Наши фильмы', url: '/films/russian/' },
+        { id: 'foreign_series', title: '📺 Зарубежные сериалы', url: '/series/foreign/' },
+        { id: 'russian_series', title: '🇷🇺 Наши сериалы', url: '/series/russian/' },
+        { id: 'tv', title: '📡 Телевизор', url: '/tv/' }
     ];
 
-    // Определяем URL TorrServer (обычно доступен глобально)
     let TS_URL = null;
-    function detectTorrServer() {
+    function getTsUrl() {
         if (TS_URL) return TS_URL;
-        // Пытаемся получить из разных источников
         if (typeof TorrServer !== 'undefined' && TorrServer.url) TS_URL = TorrServer.url;
         else if (typeof tsUrl !== 'undefined') TS_URL = window.tsUrl;
         else if (typeof Lampa !== 'undefined' && Lampa.TorrServer && Lampa.TorrServer.url) TS_URL = Lampa.TorrServer.url;
-        // Если не найден, можно попробовать стандартный порт
         if (!TS_URL) TS_URL = 'http://localhost:8090';
         return TS_URL;
     }
 
-    // === ФУНКЦИЯ ЗАПРОСА ЧЕРЕЗ ПРОКСИ TORRSERVER ===
+    // Запрос через прокси TorrServer (если доступен)
     function fetchViaProxy(url) {
-        const ts = detectTorrServer();
-        // Если TorrServer доступен, используем его прокси (решает CORS и блокировки)
+        const ts = getTsUrl();
         if (ts) {
-            // Раскомментируйте следующую строку, если ваш TorrServer поддерживает /proxy/
+            // Прокси – если ваш TorrServer поддерживает /proxy/
             // return fetch(ts + '/proxy/' + encodeURIComponent(url));
-            // Если /proxy/ не работает, используем прямой запрос (может быть CORS)
-            // Но попробуем сначала через /proxy/ - многие сборки Lampa его поддерживают
-            return fetch(ts + '/proxy/' + encodeURIComponent(url)).catch(() => fetch(url));
+            // Если не работает, используйте прямой fetch (может быть CORS)
+            return fetch(url).catch(() => fetch(url));
         }
         return fetch(url);
     }
 
-    // === ПАРСИНГ HTML ===
+    // Парсинг HTML (безопасный)
     function parseTorrentPage(html) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
         const items = [];
-
-        // Таблица с торрентами имеет id="index"
         const table = doc.querySelector('#index');
         if (!table) return items;
 
         const rows = table.querySelectorAll('tr.tr1, tr.tr2');
         for (const row of rows) {
-            // Ячейка с названием и ссылкой
             const titleCell = row.querySelector('td.td-t');
             if (!titleCell) continue;
             const titleLink = titleCell.querySelector('a');
             if (!titleLink) continue;
             let title = titleLink.textContent.trim().replace(/\s+/g, ' ');
 
-            // Magnet-ссылка (иконка downgif)
             let magnet = null;
             const magnetIcon = row.querySelector('a.downgif[href^="magnet:"]');
             if (magnetIcon) magnet = magnetIcon.getAttribute('href');
@@ -76,17 +62,13 @@
             }
             if (!magnet) continue;
 
-            // Размер
             const sizeElem = row.querySelector('td.td-size');
             let size = sizeElem ? sizeElem.textContent.trim() : '';
-
-            // Сидеры / личеры (опционально)
             const seedersElem = row.querySelector('td.td-s');
             let seeders = seedersElem ? seedersElem.textContent.trim() : '0';
             const leechersElem = row.querySelector('td.td-l');
             let leechers = leechersElem ? leechersElem.textContent.trim() : '0';
 
-            // Постер – пытаемся найти в соседней ячейке (td.td-t может содержать картинку превью)
             let poster = null;
             const previewImg = titleCell.querySelector('img');
             if (previewImg && previewImg.src) {
@@ -108,63 +90,49 @@
         return items;
     }
 
-    // === ЗАГРУЗКА КАТЕГОРИИ С ПАГИНАЦИЕЙ ===
-    // Возвращает Promise<{ items, nextPageExists }>
+    // Загрузка страницы категории (без проверки на "Дальше", просто возвращаем массив)
     function loadCategoryPage(category, page = 1) {
         let url = BASE_URL + category.url;
-        if (category.pageParam && page > 1) {
-            url += (url.includes('?') ? '&' : '?') + category.pageParam + '=' + page;
+        if (page > 1) {
+            // Для rutor пагинация через параметр page (для некоторых разделов)
+            if (category.url.includes('?')) url += '&page=' + page;
+            else url += '?page=' + page;
         }
         return fetchViaProxy(url)
             .then(res => {
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 return res.text();
             })
-            .then(html => {
-                const items = parseTorrentPage(html);
-                // Определяем, есть ли следующая страница (наличие ссылки "Дальше")
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                const nextLink = doc.querySelector('a:contains("Дальше")');
-                const nextPageExists = !!nextLink;
-                return { items, nextPageExists };
-            })
+            .then(html => parseTorrentPage(html))
             .catch(error => {
                 console.error('Ошибка загрузки категории:', error);
                 Lampa.Notification.show('Не удалось загрузить список: ' + error.message);
-                return { items: [], nextPageExists: false };
+                return [];
             });
     }
 
-    // === ОТОБРАЖЕНИЕ КАТАЛОГА С ПОСТЕРАМИ (СТАНДАРТНЫЙ COMPONENT 'catalog') ===
-    function showCatalog(categoryTitle, items, loadMoreCallback) {
+    // Отображение каталога (с поддержкой пагинации)
+    function showCatalog(categoryTitle, items, loadMoreFunc) {
         if (!items.length) {
             Lampa.Notification.show('В категории «' + categoryTitle + '» ничего не найдено');
             return;
         }
 
-        // Формируем объект для Lampa.Catalog
         const catalogData = {
             title: categoryTitle,
             component: 'catalog',
-            type: 'movie',  // или 'serial', но для торрентов подходит movie
+            type: 'movie',
             items: items.map(item => ({
                 title: item.title,
                 description: item.description,
                 poster: item.poster,
-                rating: item.seeders, // можно использовать сидеры как рейтинг
-                year: null,
-                // Дополнительные поля для плеера
+                rating: item.seeders,
                 torrent: item.magnet,
-                // При клике запускаем воспроизведение
                 action: () => playTorrent(item.magnet, item.title)
             })),
-            // Если есть функция подгрузки ещё, добавляем кнопку "Загрузить ещё"
-            more: loadMoreCallback ? {
+            more: loadMoreFunc ? {
                 title: 'Загрузить ещё',
-                action: (page) => {
-                    loadMoreCallback(page);
-                }
+                action: () => loadMoreFunc()
             } : null
         };
 
@@ -176,74 +144,45 @@
         activity.open();
     }
 
-    // === УПРАВЛЕНИЕ КАТЕГОРИЕЙ С ПАГИНАЦИЕЙ ===
+    // Обход категории с бесконечной пагинацией
     function browseCategory(category) {
         let currentPage = 1;
         let allItems = [];
-        let hasMore = true;
-        let activity = null;
 
-        function loadPage(page) {
-            Lampa.Notification.progress('Загрузка страницы ' + page + '...');
-            loadCategoryPage(category, page).then(({ items, nextPageExists }) => {
+        function loadNextPage() {
+            Lampa.Notification.progress('Загрузка страницы ' + currentPage + '...');
+            loadCategoryPage(category, currentPage).then(items => {
                 Lampa.Notification.close();
-                if (page === 1) {
-                    allItems = items;
-                } else {
-                    allItems = allItems.concat(items);
+                if (items.length === 0) {
+                    Lampa.Notification.show('Больше нет торрентов');
+                    return;
                 }
-                hasMore = nextPageExists;
-
-                // Функция для подгрузки следующей страницы
-                const loadMore = (callbackPage) => {
-                    if (!hasMore) {
-                        Lampa.Notification.show('Больше нет страниц');
-                        return;
-                    }
+                allItems = allItems.concat(items);
+                // Показываем каталог (при первом вызове) или обновляем?
+                // В Lampa проще закрыть старый и открыть новый
+                showCatalog(category.title, allItems, () => {
                     currentPage++;
-                    loadPage(currentPage);
-                };
-
-                if (activity) {
-                    // Обновляем существующую активность (не просто, проще закрыть и открыть заново)
-                    activity.close();
-                }
-                showCatalog(category.title, allItems, hasMore ? loadMore : null);
-                // Для обновления активности нужно пересоздавать, но Lampa не имеет прямого update
-                // Поэтому мы просто создаём новую активность, старая закроется
+                    loadNextPage();
+                });
+                currentPage++;
             });
         }
 
-        loadPage(1);
+        loadNextPage(); // первая страница
     }
 
-    // === ВОСПРОИЗВЕДЕНИЕ ЧЕРЕЗ TORRSERVER ===
+    // Воспроизведение через TorrServer
     function playTorrent(magnet, title) {
         if (!magnet) {
             Lampa.Notification.show('Нет magnet-ссылки');
             return;
         }
-
-        // Способ 1: используем встроенный плеер Lampa (если он умеет работать с магнет-ссылками через TorrServer)
-        if (typeof Lampa !== 'undefined' && Lampa.Player) {
-            // Lampa.Player может принять объект с magnet полем
-            try {
-                Lampa.Player.play({ torrent: magnet, title: title });
-                return;
-            } catch(e) {
-                console.warn('Lampa.Player.play не сработал', e);
-            }
-        }
-
-        // Способ 2: прямой вызов API TorrServer
-        const ts = detectTorrServer();
+        const ts = getTsUrl();
         if (ts) {
             const addUrl = ts + '/torrent/add?magnet=' + encodeURIComponent(magnet);
             fetch(addUrl, { method: 'POST' })
                 .then(() => {
-                    // После добавления запускаем поток через /stream
                     const streamUrl = ts + '/stream?magnet=' + encodeURIComponent(magnet);
-                    // Если в Lampa есть внешний плеер, открываем
                     if (typeof Lampa !== 'undefined' && Lampa.Player) {
                         Lampa.Player.play({ file: streamUrl, title: title });
                     } else {
@@ -255,64 +194,70 @@
                     Lampa.Notification.show('Ошибка добавления торрента в TorrServer');
                 });
         } else {
-            Lampa.Notification.show('TorrServer не найден. Проверьте настройки.');
+            Lampa.Notification.show('TorrServer не найден');
         }
     }
 
-    // === ДИАЛОГ ВЫБОРА КАТЕГОРИИ ===
+    // Диалог выбора категории
     function showCategorySelector() {
-        // Используем стандартный компонент 'list' для выбора категории
         const categoriesList = CATEGORIES.map(cat => ({
             title: cat.title,
             description: 'Нажмите для просмотра',
-            poster: null,
-            action: () => {
-                browseCategory(cat);
-            }
+            action: () => browseCategory(cat)
         }));
 
         const activity = new Lampa.Activity({
-            title: 'Rutor.info — Выбор категории',
+            title: 'Rutor.info — Категории',
             component: 'list',
             data: categoriesList
         });
         activity.open();
     }
 
-    // === РЕГИСТРАЦИЯ ПУНКТА В ЛЕВОМ МЕНЮ ===
-    function addMenuButton() {
-        if (typeof Lampa === 'undefined') return false;
-
-        // Проверяем, не добавлена ли уже кнопка
-        if (Lampa.Menu.exists && Lampa.Menu.exists('rutor')) return;
-
-        Lampa.Menu.add({
-            title: 'Rutor',
-            icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" width="24px" height="24px"><path d="M0 0h24v24H0z" fill="none"/><path d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4z"/></svg>',
-            action: () => showCategorySelector(),
-            // Приоритет, чтобы кнопка была выше или ниже
-            sort: 100
-        });
-        console.log('[Rutor Plugin] Кнопка добавлена в меню');
-        return true;
-    }
-
-    // === ИНИЦИАЛИЗАЦИЯ ПЛАГИНА ===
-    function init() {
-        if (typeof Lampa === 'undefined') {
-            console.warn('[Rutor Plugin] Lampa не найдена, ожидание события');
-            document.addEventListener('lampa:ready', () => {
-                addMenuButton();
-                // Дополнительно можно подписаться на обновление меню
-                if (Lampa.Menu && Lampa.Menu.on) {
-                    Lampa.Menu.on('update', addMenuButton);
-                }
+    // === ДОБАВЛЕНИЕ КНОПКИ В ЛЕВОЕ МЕНЮ ===
+    function addRutorButton() {
+        if (typeof Lampa === 'undefined' || !Lampa.Menu) {
+            console.warn('Lampa.Menu не доступен');
+            return false;
+        }
+        // Проверяем, не добавлена ли уже
+        if (Lampa.Menu.get && Lampa.Menu.get('rutor')) return true;
+        
+        try {
+            Lampa.Menu.add({
+                id: 'rutor',               // уникальный идентификатор
+                title: 'Rutor',
+                icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" width="24px" height="24px"><path d="M0 0h24v24H0z" fill="none"/><path d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4z"/></svg>',
+                action: () => showCategorySelector()
             });
-        } else {
-            addMenuButton();
+            // В некоторых сборках требуется принудительно обновить меню
+            if (Lampa.Menu.update) Lampa.Menu.update();
+            console.log('[Rutor] Кнопка добавлена');
+            return true;
+        } catch(e) {
+            console.error('[Rutor] Ошибка добавления кнопки:', e);
+            return false;
         }
     }
 
-    // Запуск
+    // Инициализация – ждём готовности Lampa
+    function init() {
+        if (typeof Lampa !== 'undefined' && Lampa.Listener) {
+            // Подписываемся на событие готовности
+            Lampa.Listener.follow('ready', function() {
+                addRutorButton();
+            });
+            // Если Lampa уже готова (событие уже прошло), добавляем сразу
+            if (Lampa.Component && Lampa.Component.isReady) {
+                addRutorButton();
+            }
+        } else {
+            // Fallback: добавляем кнопку после загрузки DOM
+            document.addEventListener('lampa:ready', addRutorButton);
+            // Также пробуем добавить через таймаут на случай, если событие не сработает
+            setTimeout(addRutorButton, 2000);
+        }
+    }
+
     init();
 })();
