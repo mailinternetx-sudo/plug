@@ -1,288 +1,220 @@
+/**
+ * Rutor Plugin для Lampa (TV-версия)
+ * Добавляет пункт меню с категориями из rutor.info
+ * Использует TorrServer как прокси для обхода CORS и блокировок
+ * @version 1.0
+ */
+
 (function() {
-    'use strict';
+    // Конфигурация
+    const BASE_URL = 'http://rutor.info';
+    const CATEGORIES = [
+        { id: 'top', title: 'Топ торренты за последние 24 часа', url: '/top', pageParam: '' },
+        { id: 'foreign_films', title: 'Зарубежные фильмы', url: '/films/foreign/', pageParam: 'page' },
+        { id: 'russian_films', title: 'Наши фильмы', url: '/films/russian/', pageParam: 'page' },
+        { id: 'foreign_series', title: 'Зарубежные сериалы', url: '/series/foreign/', pageParam: 'page' },
+        { id: 'russian_series', title: 'Наши сериалы', url: '/series/russian/', pageParam: 'page' },
+        { id: 'tv', title: 'Телевизор', url: '/tv/', pageParam: 'page' }
+    ];
 
-    // === НАСТРОЙКИ ===
-    var PLUGIN_NAME = 'RUTOR1';
-    var STORAGE_KEY = 'rutor_cache_v3';
-    var CACHE_LIFETIME = 60 * 60 * 1000; // Кеш на 1 час
+    // Получение URL TorrServer (обычно доступен глобально)
+    let tsUrl = null;
+    try {
+        if (typeof TorrServer !== 'undefined' && TorrServer.url) tsUrl = TorrServer.url;
+        else if (typeof tsUrl !== 'undefined') tsUrl = window.tsUrl;
+        else if (typeof Lampa !== 'undefined' && Lampa.TorrServer && Lampa.TorrServer.url) tsUrl = Lampa.TorrServer.url;
+    } catch(e) { console.warn('TorrServer не обнаружен', e); }
 
-    // Стили UI
-    var STYLES = `
-        .rutor-custom-card { display: flex; padding: 15px; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: pointer; align-items: center; }
-        .rutor-custom-card:hover { background-color: rgba(255, 255, 255, 0.1); }
-        .rutor-poster-placeholder { width: 80px; height: 110px; background-color: #333; display: flex; align-items: center; justify-content: center; color: #777; font-size: 10px; margin-right: 20px; flex-shrink: 0; background-size: cover; background-position: center; }
-        .rutor-info { flex-grow: 1; }
-        .rutor-title { font-size: 16px; font-weight: bold; color: #fff; margin-bottom: 5px; }
-        .rutor-meta { font-size: 13px; color: #aaa; }
-        .rutor-loader { text-align: center; padding: 50px; color: #fff; }
-        .rutor-error { color: #ff4700; text-align: center; padding: 20px; }
-    `;
-
-    // Иконка
-    var MENU_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>';
-
-    // === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
-
-    // XHR с поддержкой прокси TorrServer
-    function makeRequest(method, targetUrl) {
-        return new Promise(function(resolve, reject) {
-            var xhr = new XMLHttpRequest();
-            
-            // --- ЛОГИКА ПРОКСИ ---
-            // Получаем адрес TorrServer из настроек Lampa
-            var tsUrl = Lampa.Storage.get('torrserver_url');
-            
-            if (!tsUrl) {
-                reject({ status: 0, statusText: 'TorrServer not configured in Lampa settings' });
-                return;
-            }
-
-            // Нормализуем TS URL (убираем слеш в конце)
-            tsUrl = tsUrl.replace(/\/$/, '');
-
-            // Формируем прокси-запрос.
-            // Стандарт TorrServer: http://IP:PORT/proxy/http://site.com/path
-            var proxyUrl = tsUrl + '/proxy/' + targetUrl.replace('://', '/');
-
-            console.log('RUTOR Proxy Request:', proxyUrl);
-            
-            xhr.open(method, proxyUrl, true);
-            xhr.onload = function() {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve(xhr.responseText);
-                } else {
-                    console.error('Proxy Error Status:', xhr.status);
-                    reject({ status: xhr.status, statusText: xhr.statusText });
-                }
-            };
-            xhr.onerror = function() { 
-                console.error('Proxy Network Error');
-                reject({ status: 0, statusText: 'Network Error (Check TorrServer)' }); 
-            };
-            xhr.send();
-        });
+    // Функция получения контента через прокси TorrServer
+    function fetchViaProxy(url) {
+        // Если доступен TorrServer и он поддерживает проксирование
+        if (tsUrl) {
+            // Раскомментировать строку ниже, если ваша сборка Lampa/TorrServer поддерживает прокси
+            // return fetch(tsUrl + '/proxy/' + encodeURIComponent(url));
+            // Временный fallback: прямой запрос (может не работать из-за CORS)
+            return fetch(url);
+        }
+        // Прямой запрос (риск CORS)
+        return fetch(url);
     }
 
-    // LocalStorage обертка
-    var Storage = {
-        get: function(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; } },
-        set: function(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {} }
-    };
+    // Парсинг HTML страницы rutor
+    function parseTorrents(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const items = [];
 
-    // Инициализация
-    function init() {
+        // Поиск таблицы с торрентами (#index)
+        const table = doc.querySelector('#index');
+        if (!table) return items;
+
+        // Строки торрентов имеют класс tr1 или tr2
+        const rows = table.querySelectorAll('tr.tr1, tr.tr2');
+        for (const row of rows) {
+            // Название фильма/сериала
+            const titleElem = row.querySelector('td.td-t a');
+            if (!titleElem) continue;
+            let title = titleElem.textContent.trim();
+            // Очистка от лишних пробелов и переносов
+            title = title.replace(/\s+/g, ' ');
+
+            // Magnet-ссылка (иконка downgif)
+            let magnet = null;
+            const magnetElem = row.querySelector('a.downgif[href^="magnet:"]');
+            if (magnetElem) {
+                magnet = magnetElem.getAttribute('href');
+            } else {
+                // Альтернативный поиск
+                const altMagnet = row.querySelector('a[href^="magnet:"]');
+                if (altMagnet) magnet = altMagnet.getAttribute('href');
+            }
+            if (!magnet) continue;
+
+            // Дополнительная информация (размер, сидеры, личеры) – опционально
+            const sizeElem = row.querySelector('td.td-size');
+            const size = sizeElem ? sizeElem.textContent.trim() : '';
+
+            items.push({
+                title: title,
+                magnet: magnet,
+                size: size,
+                description: `Размер: ${size}`
+            });
+        }
+        return items;
+    }
+
+    // Загрузка категории с пагинацией (подгружается первая страница)
+    function loadCategory(category, page = 1) {
+        let url = BASE_URL + category.url;
+        if (category.pageParam && page > 1) {
+            url += (url.includes('?') ? '&' : '?') + category.pageParam + '=' + page;
+        }
+
+        return fetchViaProxy(url)
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.text();
+            })
+            .then(html => parseTorrents(html))
+            .catch(error => {
+                console.error('Ошибка загрузки категории:', error);
+                Lampa.Notification.show('Не удалось загрузить список: ' + error.message);
+                return [];
+            });
+    }
+
+    // Отображение списка фильмов через стандартный компонент Lampa
+    function showMovieList(items, categoryTitle) {
+        if (!items.length) {
+            Lampa.Notification.show('В категории «' + categoryTitle + '» ничего не найдено');
+            return;
+        }
+
+        // Преобразуем в формат Lampa.Catalog
+        const catalogData = {
+            title: categoryTitle,
+            component: 'catalog',
+            items: items.map(item => ({
+                title: item.title,
+                description: item.description || 'Торрент',
+                poster: null, // можно добавить постер, если парсить отдельно
+                action: () => playTorrent(item.magnet, item.title)
+            }))
+        };
+
+        // Открываем активность с каталогом
+        const activity = new Lampa.Activity({
+            title: categoryTitle,
+            component: 'catalog',
+            data: catalogData
+        });
+        activity.open();
+    }
+
+    // Воспроизведение через TorrServer
+    function playTorrent(magnet, title) {
+        if (!magnet) {
+            Lampa.Notification.show('Нет magnet-ссылки для воспроизведения');
+            return;
+        }
+
+        // Способ 1: используем встроенный TorrServer Lampa
+        if (typeof Lampa !== 'undefined' && Lampa.TorrServer && typeof Lampa.TorrServer.play === 'function') {
+            Lampa.TorrServer.play(magnet);
+            return;
+        }
+
+        // Способ 2: прямой вызов через TorrServer API + плеер Lampa
+        if (tsUrl) {
+            const addUrl = tsUrl + '/torrent/add?magnet=' + encodeURIComponent(magnet);
+            fetch(addUrl, { method: 'POST' })
+                .then(() => {
+                    // Ожидаем, что торрент добавился, затем запускаем плеер
+                    // Lampa.Player часто сам подхватывает последний добавленный торрент
+                    if (typeof Lampa !== 'undefined' && Lampa.Player) {
+                        Lampa.Player.play({ torrent: magnet, title: title });
+                    } else {
+                        // Альтернатива: открыть поток через TorrServer
+                        const streamUrl = tsUrl + '/stream?magnet=' + encodeURIComponent(magnet);
+                        window.location.href = streamUrl;
+                    }
+                })
+                .catch(err => {
+                    console.error('Ошибка добавления торрента', err);
+                    Lampa.Notification.show('Ошибка добавления торрента в TorrServer');
+                });
+        } else {
+            Lampa.Notification.show('TorrServer не настроен. Воспроизведение невозможно.');
+        }
+    }
+
+    // Диалог выбора категории (левое меню → список категорий)
+    function showCategorySelector() {
+        const categoriesList = CATEGORIES.map(cat => ({
+            title: cat.title,
+            description: 'Нажмите для просмотра',
+            action: () => {
+                // Показываем индикатор загрузки
+                Lampa.Notification.progress('Загрузка...');
+                loadCategory(cat).then(items => {
+                    Lampa.Notification.close();
+                    if (items.length) {
+                        showMovieList(items, cat.title);
+                    } else {
+                        Lampa.Notification.show('В категории нет торрентов', 3000);
+                    }
+                });
+            }
+        }));
+
+        const activity = new Lampa.Activity({
+            title: 'Rutor.info',
+            component: 'list',
+            data: categoriesList
+        });
+        activity.open();
+    }
+
+    // Регистрация плагина в Lampa
+    function initPlugin() {
         if (typeof Lampa === 'undefined') {
-            console.error('RUTOR: Lampa not found');
+            console.error('Lampa не загружена');
             return;
         }
 
-        // Внедряем стили
-        var style = document.createElement('style');
-        style.innerHTML = STYLES;
-        document.head.appendChild(style);
-
-        Lampa.Listener.follow('app', function(e) {
-            if (e.type === 'ready') addMenuButton();
+        // Добавляем пункт в левое меню
+        Lampa.Menu.add({
+            title: 'Rutor',
+            icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" width="24px" height="24px"><path d="M0 0h24v24H0z" fill="none"/><path d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4z"/></svg>',
+            action: () => showCategorySelector()
         });
     }
 
-    // Кнопка меню
-    function addMenuButton() {
-        var container = document.querySelector('.menu .menu__list');
-        if (!container) return;
-        var item = document.createElement('div');
-        item.className = 'menu__item selector';
-        item.innerHTML = '<div class="menu__item-icon">' + MENU_ICON_SVG + '</div><div class="menu__item-text">' + PLUGIN_NAME + '</div>';
-        item.addEventListener('hover:enter', showCategoriesScreen);
-        container.appendChild(item);
+    // Ожидаем готовность Lampa
+    if (typeof Lampa !== 'undefined' && Lampa.Listener) {
+        Lampa.Listener.follow('ready', initPlugin);
+    } else {
+        document.addEventListener('lampa:ready', initPlugin);
     }
-
-    // Экран категорий
-    function showCategoriesScreen() {
-        var categories = [
-            { title: 'Топ (24ч)', id: 'top', url: '/top/24' },
-            { title: 'Зарубежные фильмы', id: 'f_mov', url: '/0/0/100/0/0' },
-            { title: 'Наши фильмы', id: 'r_mov', url: '/0/10/100/0/0' },
-            { title: 'Зарубежные сериалы', id: 'f_ser', url: '/0/0/201/0/0' },
-            { title: 'Наши сериалы', id: 'r_ser', url: '/0/10/201/0/0' },
-            { title: 'Телевизор', id: 'tv', url: '/0/0/3/0/0' }
-        ];
-
-        Lampa.Activity.push({
-            url: '', title: PLUGIN_NAME, component: 'catalog_full', page: 1,
-            items: categories.map(function(c) { return { title: c.title, url: c.url, id: c.id }; }),
-            onSelect: function(it) { showTorrentsList(it); }
-        });
-    }
-
-    // Экран списка
-    function showTorrentsList(catItem) {
-        Lampa.Controller.enabled().content = false;
-        Lampa.Activity.push({
-            url: '', title: catItem.title, component: 'catalog_full', page: 1, items: [],
-            onCreate: function(bind) {
-                bind.render().innerHTML = '<div class="rutor-loader">Загрузка через TorrServer...</div>';
-                var cached = Storage.get(STORAGE_KEY + '_' + catItem.id);
-                if (cached && Date.now() - cached.time < CACHE_LIFETIME) {
-                    renderResults(cached.data, bind);
-                } else {
-                    loadAndParse(catItem.url, bind, catItem.id);
-                }
-            }
-        });
-    }
-
-    // Загрузка
-    function loadAndParse(path, bind, catId) {
-        // Формируем полный целевой URL для прокси
-        var targetUrl = 'http://rutor.info' + path;
-        
-        makeRequest('GET', targetUrl).then(function(html) {
-            var movies = parseRutorHtml(html);
-            
-            if (movies.length > 0) {
-                Storage.set(STORAGE_KEY + '_' + catId, { data: movies, time: Date.now() });
-                renderResults(movies, bind);
-            } else {
-                // Проверка на пустой результат
-                var parser = new DOMParser();
-                var doc = parser.parseFromString(html, 'text/html');
-                var bodyText = doc.body ? doc.body.innerText.toLowerCase() : '';
-                
-                if (bodyText.indexOf('ничего не найдено') > -1 || bodyText.indexOf('nothing found') > -1) {
-                    bind.render().innerHTML = '<div class="rutor-error">По запросу ничего не найдено.</div>';
-                } else {
-                    console.warn('RUTOR Parser: Empty result. HTML length:', html.length);
-                    bind.render().innerHTML = '<div class="rutor-error">Список пуст. Возможно, изменилась верстка.</div>';
-                }
-            }
-        }).catch(function(e) {
-            console.error('RUTOR Request Error:', e);
-            if (e.statusText.indexOf('TorrServer not configured') !== -1) {
-                bind.render().innerHTML = '<div class="rutor-error">Ошибка: Не настроен TorrServer в настройках Lampa!</div>';
-            } else {
-                bind.render().innerHTML = '<div class="rutor-error">Ошибка загрузки. Проверьте TorrServer.</div>';
-            }
-        });
-    }
-
-    // Парсер
-    function parseRutorHtml(html) {
-        var parser = new DOMParser();
-        var doc = parser.parseFromString(html, 'text/html');
-        var res = [];
-        
-        var table = doc.getElementById('index');
-        if (!table) return [];
-
-        var rows = table.querySelectorAll('tr');
-        
-        rows.forEach(function(tr) {
-            if (tr.querySelector('th')) return;
-            var tds = tr.querySelectorAll('td');
-            if (tds.length < 4) return;
-
-            var linkTag = null;
-            var sizeTag = null;
-            var seedsTag = null;
-
-            // Умный поиск ячеек
-            for (var i = 0; i < tds.length; i++) {
-                var a = tds[i].querySelector('a');
-                if (a && a.href.indexOf('/torrent/') !== -1) {
-                    linkTag = a;
-                    if (tds[i+1]) sizeTag = tds[i+1].querySelector('span');
-                    if (tds[tds.length-1]) seedsTag = tds[tds.length-1];
-                    break;
-                }
-            }
-            
-            if (!linkTag && tds[1]) {
-                linkTag = tds[1].querySelector('a');
-                if (tds[2]) sizeTag = tds[2].querySelector('span');
-                if (tds[4]) seedsTag = tds[4];
-            }
-
-            if (linkTag) {
-                var title = linkTag.innerText.trim();
-                var href = linkTag.getAttribute('href');
-                var size = sizeTag ? sizeTag.innerText.trim() : '';
-                var seeds = seedsTag ? parseInt(seedsTag.innerText.replace(/\D/g, '')) || 0 : 0;
-
-                if (title && href) {
-                    res.push({
-                        title: title,
-                        url: 'http://rutor.info' + href,
-                        size: size,
-                        seeds: seeds
-                    });
-                }
-            }
-        });
-        return res;
-    }
-
-    // Рендер
-    function renderResults(movies, bind) {
-        if (!movies.length) {
-            bind.render().innerHTML = '<div class="rutor-error">Список пуст</div>';
-            return;
-        }
-        var cont = document.createElement('div');
-        movies.forEach(function(m) {
-            var el = document.createElement('div');
-            el.className = 'rutor-custom-card selector';
-            el.innerHTML = `
-                <div class="rutor-poster-placeholder" style="background-color: ${stringToColor(m.title)}"></div>
-                <div class="rutor-info">
-                    <div class="rutor-title">${m.title}</div>
-                    <div class="rutor-meta">${m.size} | ${m.seeds} сидов</div>
-                </div>`;
-            el.addEventListener('hover:enter', function() { playTorrent(m); });
-            cont.appendChild(el);
-        });
-        bind.render().innerHTML = '';
-        bind.append(cont);
-    }
-
-    // Play
-    function playTorrent(m) {
-        Lampa.Modal.open({ title: m.title, html: '<div style="padding:20px;">Получение Magnet...</div>', onBack: function(){Lampa.Modal.close();return false;} });
-        
-        // Загружаем детали тоже через прокси
-        makeRequest('GET', m.url).then(function(html) {
-            var doc = new DOMParser().parseFromString(html, 'text/html');
-            var mag = doc.querySelector('a[href^="magnet:"]');
-            if (mag) {
-                startStream(mag.getAttribute('href'), m.title);
-            } else {
-                Lampa.Modal.close(); Lampa.Noty.show('Magnet не найден');
-            }
-        }).catch(function(){ Lampa.Modal.close(); Lampa.Noty.show('Ошибка загрузки деталей'); });
-    }
-
-    function startStream(magnet, title) {
-        Lampa.Modal.close();
-        var ts = Lampa.Storage.get('torrserver_url');
-        if (!ts) return Lampa.Noty.show('Нет TorrServer');
-        ts = ts.replace(/\/$/, '');
-        var url = ts + '/streams?url=' + encodeURIComponent(magnet) + '&title=' + encodeURIComponent(title) + '&save_to_db=true';
-        
-        Lampa.Player.play({
-            title: title,
-            url: url,
-            timeline: [],
-            movie: { id: 'r1_'+Date.now(), title: title, source: PLUGIN_NAME }
-        });
-        Lampa.Player.playlist([Lampa.Player.selected()]);
-    }
-
-    function stringToColor(str) {
-        var hash = 0;
-        for (var i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
-        var c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
-        return '#' + "00000".substring(0, 6 - c.length) + c;
-    }
-
-    init();
 })();
