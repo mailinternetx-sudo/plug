@@ -3,270 +3,276 @@
 
     // ============================================================
     //  Плагин Rutor для Lampa с поддержкой TorrServer
-    //  Версия 1.1.0
+    //  Версия 1.2.0 (Исправлено отображение списка)
     // ============================================================
 
     const PLUGIN_NAME = 'RutorTorr';
-    const PLUGIN_VERSION = '1.1.0';
+    const PLUGIN_VERSION = '1.2.0';
     const DEBUG = true;
 
-    // ---------- Категории rutor.info (проверенные ID) ----------
     const CATEGORIES = {
-        top24: {
-            id: 0,
-            name: 'Топ торренты за 24 часа',
-            url: '/'                 // главная страница показывает топ за 24ч
-        },
-        foreign_movies: {
-            id: 4,
-            name: 'Зарубежные фильмы',
-            url: '/browse/4'
-        },
-        our_movies: {
-            id: 3,
-            name: 'Наши фильмы',
-            url: '/browse/3'
-        },
-        foreign_series: {
-            id: 2,
-            name: 'Зарубежные сериалы',
-            url: '/browse/2'
-        },
-        our_series: {
-            id: 1,
-            name: 'Наши сериалы',
-            url: '/browse/1'
-        },
-        tv: {
-            id: 5,
-            name: 'Телевизор',
-            url: '/browse/5'
-        }
+        top24: { id: 0, name: 'Топ торренты за 24 часа', url: '/' },
+        foreign_movies: { id: 4, name: 'Зарубежные фильмы', url: '/browse/4' },
+        our_movies: { id: 3, name: 'Наши фильмы', url: '/browse/3' },
+        foreign_series: { id: 2, name: 'Зарубежные сериалы', url: '/browse/2' },
+        our_series: { id: 1, name: 'Наши сериалы', url: '/browse/1' },
+        tv: { id: 5, name: 'Телевизор', url: '/browse/5' }
     };
 
-    // ---------- Настройки ----------
     let settings = {
         enabled: true,
         torrServerUrl: 'http://127.0.0.1:8090',
-        useProxy: false
+        useProxy: true // По умолчанию ВКЛЮЧЕНО, так как без прокси рутор не отдаст данные
     };
     const STORAGE_KEY = 'rutor_torr_settings';
 
-    function log(...args) {
-        if (DEBUG) console.log(`[${PLUGIN_NAME}]`, ...args);
-    }
-    function errorLog(...args) {
-        console.error(`[${PLUGIN_NAME}]`, ...args);
-    }
+    function log(...args) { if (DEBUG) console.log(`[${PLUGIN_NAME}]`, ...args); }
+    function errorLog(...args) { console.error(`[${PLUGIN_NAME}]`, ...args); }
 
     function loadSettings() {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-            try {
-                Object.assign(settings, JSON.parse(saved));
-                log('Настройки загружены', settings);
-            } catch(e) { errorLog(e); }
-        }
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) Object.assign(settings, JSON.parse(saved));
+        } catch (e) { errorLog(e); }
     }
     function saveSettings() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-        log('Настройки сохранены');
     }
 
     function getProxiedUrl(url) {
+        // Правильный формат прокси для TorrServer
         if (settings.useProxy && settings.torrServerUrl) {
-            return `${settings.torrServerUrl}/proxy/?url=${encodeURIComponent(url)}`;
+            return `${settings.torrServerUrl}/proxy?url=${encodeURIComponent(url)}`;
         }
         return url;
     }
 
-    // ---------- Продвинутый парсинг rutor.info ----------
+    // ---------- Улучшенный парсинг rutor.info ----------
     function parseRutorPage(html, categoryName) {
         const items = [];
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
 
-        // Ищем таблицу с раздачами: обычно это <table class="tablesaw" ...> или просто первая таблица
-        let table = doc.querySelector('table.tablesaw');
-        if (!table) table = doc.querySelector('table');
-        if (!table) {
-            errorLog('Таблица с торрентами не найдена');
+        // Ищем таблицу (на руторе ID таблицы часто меняется, поэтому ищем по тегу и наличию magnet)
+        const tables = doc.querySelectorAll('table');
+        let targetTable = null;
+
+        for (const table of tables) {
+            if (table.innerHTML.includes('magnet:')) {
+                targetTable = table;
+                break;
+            }
+        }
+
+        if (!targetTable) {
+            errorLog('Таблица с magnet-ссылками не найдена');
             return items;
         }
 
-        const rows = table.querySelectorAll('tr');
-        log(`Найдено строк в таблице: ${rows.length}`);
+        const rows = targetTable.querySelectorAll('tr');
 
         for (const row of rows) {
-            // Пропускаем заголовки (если есть th)
             if (row.querySelector('th')) continue;
 
-            const titleCell = row.querySelector('td:nth-child(2) a');
-            if (!titleCell) continue;
+            // Ищем magnet-ссылку. Если её нет — это не торрент.
+            const magnetEl = row.querySelector('a[href^="magnet:"]');
+            if (!magnetEl) continue;
+            const magnet = magnetEl.getAttribute('href');
 
-            let title = titleCell.textContent.trim();
-            // Убираем лишние пробелы и переводы строк
-            title = title.replace(/\s+/g, ' ');
+            // Ищем название. Обычно это первая ссылка во второй колонке, ведущая на /torrent/
+            let titleEl = row.querySelector('td:nth-child(2) a[href*="/torrent/"]');
+            if (!titleEl) titleEl = row.querySelector('td:nth-child(2) a'); // Fallback
+            
+            if (!titleEl) continue;
+            
+            let title = titleEl.textContent.trim().replace(/\s+/g, ' ');
 
-            // magnet-ссылка – обычно в третьей колонке <a href="magnet:...">
-            const magnetLink = row.querySelector('td:nth-child(3) a[href^="magnet:"]')?.getAttribute('href');
-            if (!magnetLink) continue;
+            // Извлекаем данные из остальных ячеек
+            const cells = row.querySelectorAll('td');
+            let size = 'N/A', seeds = '0', leech = '0', date = '';
 
-            // Размер (4-я колонка)
-            const sizeCell = row.querySelector('td:nth-child(4)');
-            const size = sizeCell ? sizeCell.textContent.trim() : 'N/A';
+            if (cells.length >= 2) date = cells[0].textContent.trim();
+            if (cells.length >= 4) size = cells[3].textContent.trim();
+            if (cells.length >= 5) seeds = cells[4].textContent.trim().replace(/[^\d]/g, '') || '0';
+            if (cells.length >= 6) leech = cells[5].textContent.trim().replace(/[^\d]/g, '') || '0';
 
-            // Сидеры (5-я колонка)
-            const seedsCell = row.querySelector('td:nth-child(5)');
-            let seeds = seedsCell ? seedsCell.textContent.trim() : '0';
-            seeds = seeds.replace(/[^\d]/g, '') || '0';
-
-            // Личеры (6-я колонка)
-            const leechCell = row.querySelector('td:nth-child(6)');
-            let leech = leechCell ? leechCell.textContent.trim() : '0';
-            leech = leech.replace(/[^\d]/g, '') || '0';
-
-            // Дата (1-я колонка)
-            const dateCell = row.querySelector('td:nth-child(1)');
-            let date = dateCell ? dateCell.textContent.trim() : '';
-
-            items.push({
-                title,
-                magnet: magnetLink,
-                size,
-                seeds,
-                leech,
-                date,
-                category: categoryName
-            });
+            items.push({ title, magnet, size, seeds, leech, date, category: categoryName });
         }
 
         log(`Категория "${categoryName}": распаршено ${items.length} раздач`);
-        if (items.length === 0 && DEBUG) {
-            // Выводим небольшой фрагмент HTML для отладки
-            const sample = html.substring(0, 500);
-            errorLog('HTML не содержит ожидаемых данных. Фрагмент:', sample);
-        }
         return items;
     }
 
-    // ---------- Загрузка страницы rutor.info с обработкой CORS ----------
+    // ---------- Загрузка страницы ----------
     async function loadRutorPage(categoryKey) {
         const cat = CATEGORIES[categoryKey];
         if (!cat) return [];
 
-        let url = `https://rutor.info${cat.url}`;
-        if (categoryKey === 'top24') url = 'https://rutor.info/';
-
+        const url = `https://rutor.info${cat.url}`;
         const proxiedUrl = getProxiedUrl(url);
         log(`Загрузка: ${proxiedUrl}`);
 
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // Таймаут 10 сек
+
             const response = await fetch(proxiedUrl, {
+                signal: controller.signal,
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3'
                 }
             });
+            clearTimeout(timeoutId);
+
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const html = await response.text();
-            if (!html || html.length < 100) throw new Error('Получен пустой HTML');
+            if (!html || html.length < 500) throw new Error('Получен пустой или слишком короткий HTML');
+            
             return parseRutorPage(html, cat.name);
         } catch (e) {
             errorLog('Ошибка загрузки:', e.message);
-            if (!settings.useProxy && (e.message.includes('Failed to fetch') || e.message.includes('CORS'))) {
-                Lampa.Notification.show('Ошибка CORS! Включите "Использовать прокси TorrServer" в настройках плагина', 5000);
-            } else if (!settings.useProxy) {
-                Lampa.Notification.show('Не удалось загрузить данные. Попробуйте включить прокси TorrServer в настройках.', 4000);
+            if (!settings.useProxy) {
+                Lampa.Notification.show('Ошибка сети! Включите прокси TorrServer в настройках плагина.', 5000);
+            } else {
+                Lampa.Notification.show('Ошибка загрузки. Проверьте работу TorrServer и его прокси.', 5000);
             }
             return [];
         }
     }
 
-    // ---------- TorrServer: добавление магнита и получение потока ----------
+    // ---------- TorrServer: добавление и воспроизведение ----------
     async function addMagnetToTorrServer(magnet) {
-        const tsUrl = settings.torrServerUrl;
-        if (!tsUrl) {
-            errorLog('TorrServer не задан');
-            return null;
-        }
+        const tsUrl = settings.torrServerUrl.replace(/\/$/, ''); // Убираем слэш на конце
         try {
-            // Добавляем торрент (используем POST, так как GET может не работать в новых версиях)
-            const addUrl = `${tsUrl}/torrents/add`;
-            const formData = new URLSearchParams();
-            formData.append('magnet', magnet);
-            const addResp = await fetch(addUrl, {
+            // Добавляем торрент
+            const addResp = await fetch(`${tsUrl}/torrents/add`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formData.toString()
+                body: `magnet=${encodeURIComponent(magnet)}`
             });
-            if (!addResp.ok) throw new Error(`HTTP ${addResp.status}`);
+            if (!addResp.ok) throw new Error(`TS Add Error: ${addResp.status}`);
             const data = await addResp.json();
+            
             const hash = data.hash || data.info_hash;
-            if (!hash) throw new Error('Не получен хэш');
+            if (!hash) throw new Error('Не получен хэш торрента');
 
             // Получаем список файлов
             const filesResp = await fetch(`${tsUrl}/torrents/${hash}/files`);
             const files = await filesResp.json();
-            if (!files.length) throw new Error('Нет файлов');
+            if (!files || !files.length) throw new Error('Файлы не найдены');
 
-            // Ищем видеофайл
-            let videoIndex = files.findIndex(f => /\.(mkv|mp4|avi|mov|ts|m4v)$/i.test(f.name));
-            if (videoIndex === -1) videoIndex = 0;
-            const streamUrl = `${tsUrl}/stream/${hash}/${videoIndex}`;
+            // Ищем видеофайл (приоритет: mkv > mp4 > avi) или берем самый большой
+            let videoFile = files.find(f => /\.mkv$/i.test(f.name)) || 
+                            files.find(f => /\.mp4$/i.test(f.name)) || 
+                            files[0];
+
+            const streamUrl = `${tsUrl}/stream/${hash}/${videoFile.id}`;
             log('Stream URL:', streamUrl);
             return streamUrl;
         } catch (e) {
             errorLog('TorrServer ошибка:', e);
+            Lampa.Notification.show('Ошибка TorrServer: ' + e.message, 4000);
             return null;
         }
     }
 
     async function playMovie(item) {
-        if (!item.magnet) {
-            Lampa.Notification.show('Нет magnet-ссылки', 3000);
-            return;
-        }
-        Lampa.Notification.show('Добавление в TorrServer...', 2000);
+        if (!item.magnet) return Lampa.Notification.show('Нет magnet-ссылки', 3000);
+        
+        Lampa.Controller.enabled().status = false; // Блокируем пульт
+        Lampa.Utils.putProgressUrl('Добавление в TorrServer...');
+        
         const streamUrl = await addMagnetToTorrServer(item.magnet);
+        Lampa.Utils.putProgressUrl('');
+        Lampa.Controller.enabled().status = true;
+
         if (streamUrl) {
-            Lampa.Player.play(streamUrl, { title: item.title });
-        } else {
-            Lampa.Notification.show('Ошибка воспроизведения', 4000);
+            Lampa.Player.play(streamUrl, { 
+                title: item.title,
+                // Подсказка для встроенного плеера Lampa, что это веб-поток
+                subtitles: [] 
+            });
         }
     }
 
-    // ---------- Отображение каталога в Lampa ----------
-    function showCatalog(items, categoryName) {
+    // ---------- Отображение списка (КАСТОМНЫЙ КОМПОНЕНТ LAMPA) ----------
+    // Это гарантирует, что список будет работать с пультом и не сломает интерфейс
+    function showTorrentList(items, categoryName) {
         if (!items.length) {
-            Lampa.Notification.show(`В категории "${categoryName}" ничего не найдено`, 4000);
+            Lampa.Notification.show('Список пуст', 3000);
             return;
         }
-        const catalogItems = items.map((item, idx) => {
-            let year = '';
-            const yearMatch = item.title.match(/\((\d{4})\)/);
-            if (yearMatch) year = yearMatch[1];
-            const poster = `https://via.placeholder.com/300x450/1a1a2e/ffffff?text=${encodeURIComponent(item.title.substring(0, 20))}`;
-            return {
-                id: `rutor_${Date.now()}_${idx}`,
-                title: item.title,
-                year,
-                poster,
-                description: `📁 ${item.size} | 👤 ${item.seeds} | 🔽 ${item.leech}\n📅 ${item.date}`,
-                magnet: item.magnet
-            };
-        });
 
         Lampa.Activity.push({
             url: '',
             title: categoryName,
-            component: 'catalog',
-            catalog: {
-                items: catalogItems,
-                source: { title: categoryName, poster: 'https://rutor.info/favicon.ico' }
+            component: 'rutor_list_component',
+            page: 1,
+            onBack: () => Lampa.Activity.back(),
+            onCreate: function (activity) {
+                let scroll = new Lampa.Scroll({ mask: true, over: true });
+                let html_items = [];
+                let controller = Lampa.Controller();
+
+                activity.render().append(scroll.render());
+                scroll.clear();
+
+                // Создаем DOM элементы для каждого торрента
+                items.forEach((item, idx) => {
+                    let elem = document.createElement('div');
+                    elem.className = 'torrent-list-item selector';
+                    elem.style.cssText = `
+                        padding: 1.2em 1.5em;
+                        border-bottom: 1px solid rgba(255,255,255,0.1);
+                        cursor: pointer;
+                        transition: background 0.2s;
+                    `;
+                    
+                    // Форматируем информацию
+                    let infoHtml = `
+                        <div style="color: rgba(255,255,255,0.9); font-size: 1.1em; line-height: 1.3; margin-bottom: 0.5em;">
+                            ${item.title}
+                        </div>
+                        <div style="display: flex; color: rgba(255,255,255,0.5); font-size: 0.9em; gap: 1.5em;">
+                            <span>📁 ${item.size}</span>
+                            <span style="color: #4caf50;">👤 ${item.seeds}</span>
+                            <span>🔽 ${item.leech}</span>
+                            <span>📅 ${item.date}</span>
+                        </div>
+                    `;
+                    elem.innerHTML = infoHtml;
+
+                    // Подсветка при наведении (фокусе с пульта)
+                    elem.onhover = () => elem.style.background = 'rgba(255,255,255,0.1)';
+                    elem.onunhover = () => elem.style.background = 'transparent';
+
+                    // Обработчик нажатия (ОК на пульте или клик мышью)
+                    elem.onenter = () => playMovie(item);
+
+                    html_items.push(elem);
+                    scroll.append(elem);
+                });
+
+                // Подключаем управление с пульта ДУ
+                controller.add('rutor_content', {
+                    toggle: () => {
+                        controller.collectionSet(html_items);
+                        controller.collectionFocus(0, html_items[0]);
+                    },
+                    left: () => Lampa.Activity.back(),
+                    right: () => {},
+                    up: () => controller.move('up'),
+                    down: () => controller.move('down'),
+                    back: () => Lampa.Activity.back()
+                });
+
+                controller.toggle('rutor_content');
             },
-            onSelect: (item) => playMovie(item)
+            onDestroy: function () {
+                Lampa.Controller.remove('rutor_content');
+                // Скролл автоматически удаляется вместе с Activity
+            }
         });
     }
 
@@ -274,130 +280,126 @@
     async function onCategorySelect(categoryKey) {
         Lampa.Notification.show('Загрузка списка...', 1500);
         const items = await loadRutorPage(categoryKey);
-        if (items.length) {
-            showCatalog(items, CATEGORIES[categoryKey].name);
-        } else {
-            // Дополнительная диагностика
-            if (!settings.useProxy) {
-                Lampa.Notification.show('Список пуст. Возможно, нужен прокси. Включите в настройках плагина.', 5000);
-            } else {
-                Lampa.Notification.show('Не удалось загрузить данные. Проверьте адрес TorrServer.', 5000);
-            }
-        }
+        showTorrentList(items, CATEGORIES[categoryKey].name);
     }
 
     // ---------- Модальное окно выбора категорий ----------
     function showCategoriesModal() {
-        const $container = $('<div class="rutor-categories-container" style="display:flex; flex-wrap:wrap; justify-content:center; padding:20px;"></div>');
+        let $container = $('<div class="rutor-categories-container" style="display:flex; flex-wrap:wrap; justify-content:center; padding:20px;"></div>');
+        let btns = [];
+
         for (const [key, cat] of Object.entries(CATEGORIES)) {
-            const $btn = $(`
-                <div class="rutor-category-btn selector" data-category="${key}" style="
-                    background: linear-gradient(135deg, #1e1e2f, #2a2a3a);
-                    border-radius: 16px; margin: 12px; padding: 16px 24px;
-                    min-width: 180px; text-align: center; cursor: pointer;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            let $btn = $(`
+                <div class="simple-button selector" style="
+                    background: linear-gradient(135deg, #2a2a3a, #1e1e2f);
+                    border-radius: 12px; margin: 10px; padding: 18px 20px;
+                    min-width: 200px; text-align: center; 
+                    box-shadow: 0 4px 15px rgba(0,0,0,0.4);
                 ">
-                    <div style="font-size: 1.2em; font-weight: bold; color: #fff;">${cat.name}</div>
-                    <div style="font-size: 0.8em; color: #aaa;">ID ${cat.id}</div>
+                    <div style="font-size: 1.15em; font-weight: bold; color: #fff;">${cat.name}</div>
                 </div>
             `);
-            $btn.on('hover:enter', function() {
-                const catKey = $(this).data('category');
+            
+            $btn.on('hover:enter', function () {
                 Lampa.Modal.close();
-                onCategorySelect(catKey);
+                Lampa.Controller.remove('rutor_modal');
+                onCategorySelect(key);
             });
+            
             $container.append($btn);
+            btns.push($btn);
         }
+
         // Кнопка настроек
-        const $settingsBtn = $(`
-            <div class="rutor-category-btn selector" style="
-                background: linear-gradient(135deg, #3a2a2a, #2a1a1a);
-                border-radius: 16px; margin: 12px; padding: 16px 24px;
-                min-width: 180px; text-align: center; cursor: pointer;
+        let $settingsBtn = $(`
+            <div class="simple-button selector" style="
+                background: linear-gradient(135deg, #3a2a1a, #2a1a1a);
+                border-radius: 12px; margin: 10px; padding: 18px 20px;
+                min-width: 200px; text-align: center;
             ">
-                <div style="font-size: 1.2em; font-weight: bold; color: #ffaa00;">⚙️ Настройки</div>
-                <div style="font-size: 0.8em; color: #ccc;">TorrServer и прокси</div>
+                <div style="font-size: 1.15em; font-weight: bold; color: #ffaa00;">⚙️ Настройки</div>
             </div>
         `);
         $settingsBtn.on('hover:enter', () => {
             Lampa.Modal.close();
+            Lampa.Controller.remove('rutor_modal');
             Lampa.SettingsApi.open('rutor_torr');
         });
         $container.append($settingsBtn);
+        btns.push($settingsBtn);
 
         Lampa.Modal.open({
-            title: 'Rutor.info торренты',
+            title: 'Rutor.info',
             html: $container,
             size: 'full',
-            onBack: () => { Lampa.Modal.close(); Lampa.Controller.toggle('menu'); }
+            onBack: () => {
+                Lampa.Modal.close();
+                Lampa.Controller.remove('rutor_modal');
+                Lampa.Controller.toggle('menu');
+            }
         });
 
-        // Управление фокусом для пульта
+        // Навигация пультом в модальном окне
         setTimeout(() => {
-            const $btns = $container.find('.selector');
-            let idx = 0;
-            function updateFocus(i) {
-                $btns.removeClass('focus');
-                $btns.eq(i).addClass('focus').attr('tabindex', '0').focus();
-                idx = i;
-            }
-            if ($btns.length) updateFocus(0);
-            Lampa.Controller.add('rutor_categories', {
-                toggle: () => { Lampa.Controller.collectionSet($btns); updateFocus(idx); },
-                up: () => { let i = idx - 1; if (i < 0) i = $btns.length - 1; updateFocus(i); },
-                down: () => { let i = idx + 1; if (i >= $btns.length) i = 0; updateFocus(i); },
-                left: () => {},
+            Lampa.Controller.add('rutor_modal', {
+                toggle: () => {
+                    Lampa.Controller.collectionSet(btns);
+                    Lampa.Controller.collectionFocus(0, btns[0]);
+                },
+                up: () => Lampa.Controller.move('up'),
+                down: () => Lampa.Controller.move('down'),
                 right: () => {},
-                back: () => { Lampa.Modal.close(); Lampa.Controller.toggle('menu'); },
-                enter: () => $btns.eq(idx).trigger('hover:enter')
+                left: () => {},
+                back: () => {
+                    Lampa.Modal.close();
+                    Lampa.Controller.remove('rutor_modal');
+                    Lampa.Controller.toggle('menu');
+                }
             });
-            Lampa.Controller.toggle('rutor_categories');
-        }, 100);
+            Lampa.Controller.toggle('rutor_modal');
+        }, 150);
     }
 
-    // ---------- Добавление кнопки в главное меню Lampa ----------
+    // ---------- Добавление кнопки в главное меню ----------
     function addMenuButton() {
-        const $menu = $('.menu .menu__list').first();
-        if (!$menu.length) { setTimeout(addMenuButton, 500); return; }
+        let $menu = $('.menu .menu__list').first();
+        if (!$menu.length) return setTimeout(addMenuButton, 500);
         if ($('.menu__item.rutor-torr-menu-btn').length) return;
 
-        const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1.2em" height="1.2em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>`;
-        const $btn = $(`<li class="menu__item selector rutor-torr-menu-btn"><div class="menu__ico">${iconSvg}</div><div class="menu__text">Rutor торренты</div></li>`);
+        let $btn = $(`
+            <li class="menu__item selector rutor-torr-menu-btn">
+                <div class="menu__ico">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="1.2em" height="1.2em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+                </div>
+                <div class="menu__text">Rutor торренты</div>
+            </li>
+        `);
+        
         $btn.on('hover:enter', showCategoriesModal);
         $menu.append($btn);
         log('Кнопка в меню добавлена');
     }
 
-    // ---------- Компонент настроек в Lampa ----------
+    // ---------- Настройки ----------
     function addSettingsComponent() {
         Lampa.SettingsApi.addComponent({
             component: 'rutor_torr',
             name: 'Rutor + TorrServer',
             icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>'
         });
+        
         Lampa.SettingsApi.addParam({
             component: 'rutor_torr',
             param: { name: 'torrServerUrl', type: 'input', default: settings.torrServerUrl },
-            field: { name: 'Адрес TorrServer', description: 'http://IP:8090' },
+            field: { name: 'Адрес TorrServer', description: 'Например: http://192.168.1.100:8090' },
             onChange: (val) => { settings.torrServerUrl = val; saveSettings(); }
         });
+        
         Lampa.SettingsApi.addParam({
             component: 'rutor_torr',
             param: { name: 'useProxy', type: 'trigger', default: settings.useProxy },
-            field: { name: 'Использовать прокси TorrServer', description: 'Обязательно включите, если rutor.info не загружается' },
+            field: { name: 'Использовать прокси TorrServer', description: 'ОБЯЗАТЕЛЬНО для обхода блокировки рутора' },
             onChange: (val) => { settings.useProxy = val; saveSettings(); }
-        });
-        Lampa.SettingsApi.addParam({
-            component: 'rutor_torr',
-            param: { type: 'button', component: 'about' },
-            field: { name: 'О плагине', description: `Версия ${PLUGIN_VERSION}` },
-            onChange: () => {
-                Lampa.Modal.open({
-                    title: 'О плагине',
-                    html: `<div style="padding:20px;text-align:center;"><h3>${PLUGIN_NAME}</h3><p>Версия ${PLUGIN_VERSION}</p><p>Загружает торренты с rutor.info и воспроизводит через TorrServer.</p><p>При проблемах включите прокси TorrServer в настройках.</p></div>`,
-                    size: 'small'
-                });
-            }
         });
     }
 
@@ -405,12 +407,14 @@
     function init() {
         loadSettings();
         addSettingsComponent();
-        if (window.Lampa && window.Lampa.App && window.Lampa.App.ready) addMenuButton();
+        
+        if (window.Lampa && Lampa.App && Lampa.App.ready) addMenuButton();
         else Lampa.Listener.follow('app', (e) => { if (e.type === 'ready') addMenuButton(); });
-        log('Инициализация завершена');
+        
+        log('Плагин инициализирован');
     }
+
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
     else init();
 
-    window.RutorTorrPlugin = { name: PLUGIN_NAME, version: PLUGIN_VERSION, settings };
 })();
