@@ -21,7 +21,7 @@
 
     let settings = {
         enabled: true,
-        torrServerUrl: 'http://127.0.0.1:8090',
+        torrServerUrl: 'http://217.25.229.57:8090/',
         useProxy: true // По умолчанию ВКЛЮЧЕНО, так как без прокси рутор не отдаст данные
     };
     const STORAGE_KEY = 'rutor_torr_settings';
