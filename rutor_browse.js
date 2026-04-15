@@ -1,201 +1,153 @@
-// ========== УЛУЧШЕННЫЙ ПАРСИНГ ==========
-function parseRutorPage(html, categoryName) {
-    const items = [];
-    try {
-        // Правильно парсим HTML-строку в DOM
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
+(function () {
+    'use strict';
 
-        log(`🔍 Начинаю парсинг для категории: "${categoryName}"`);
+    var SOURCE_NAME = 'ULTIMATE HYBRID';
+    var API_URL = 'https://script.google.com/macros/s/AKfycbz_5VESAAFFcrD8BB8DJnj1Q-NBdLFLUbphP5SRb07KQ3RHZT_zoeBj8MYZVdEneHC-/exec';
 
-        // Ищем все таблицы
-        const tables = doc.querySelectorAll('table');
-        log(`📊 Найдено таблиц: ${tables.length}`);
+    var SHEETS = [
+        'Топ 24ч',
+        'Зарубежные фильмы',
+        'Наши фильмы',
+        'Зарубежные сериалы',
+        'Наши сериалы',
+        'Телевизор'
+    ];
 
-        if (tables.length === 0) {
-            errorLog('❌ Таблицы не найдены на странице');
-            return items;
-        }
+    function Api() {
+        var network = new Lampa.Reguest();
 
-        for (let tableIdx = 0; tableIdx < tables.length; tableIdx++) {
-            const table = tables[tableIdx];
-            const rows = table.querySelectorAll('tbody tr, tr');
-            
-            log(`📍 Таблица ${tableIdx}: ${rows.length} строк`);
+        // =======================
+        // 📺 КАТЕГОРИИ
+        // =======================
+        this.category = function (params, onSuccess) {
 
-            for (const row of rows) {
-                try {
-                    const cells = row.querySelectorAll('td');
-                    if (cells.length < 4) continue;
+            var parts = [];
 
-                    // Ищем magnet-ссылку
-                    const magnetEl = row.querySelector('a[href^="magnet:"]');
-                    if (!magnetEl) continue;
-                    
-                    const magnet = magnetEl.getAttribute('href');
-                    if (!magnet || magnet.length < 20) continue;
+            SHEETS.forEach(function (sheet) {
 
-                    // Ищем название торрента (ссылка на /torrent/)
-                    let titleEl = row.querySelector('a[href*="/torrent/"]');
-                    
-                    // Fallback: берем вторую ссылку в строке
-                    if (!titleEl) {
-                        const links = row.querySelectorAll('a');
-                        if (links.length > 1) titleEl = links[1];
-                    }
+                parts.push(function (next) {
 
-                    if (!titleEl) continue;
-                    
-                    let title = titleEl.textContent.trim().replace(/\s+/g, ' ');
-                    if (!title || title.length < 2) continue;
+                    network.silent(API_URL + '?sheet=' + sheet, function (json) {
 
-                    log(`✓ Найден торрент: "${title.substring(0, 50)}..."`);
+                        var results = (json.results || []).map(function (item) {
 
-                    // Извлекаем данные из ячеек (расположение может варьироваться)
-                    let date = '';
-                    let size = 'N/A';
-                    let seeds = '0';
-                    let leech = '0';
+                            return {
+                                id: item.id, // ✅ TMDB ID
+                                title: item.title,
+                                name: item.title,
+                                poster_path: item.poster_path,
+                                backdrop_path: item.poster_path,
+                                vote_average: item.vote_average || 0,
+                                type: item.type || 'movie',
+                                source: 'tmdb',
 
-                    // Проходим по всем ячейкам
-                    for (let i = 0; i < cells.length; i++) {
-                        const cellText = cells[i].textContent.trim();
-                        
-                        // Дата обычно в первой ячейке (формат: DD.MM или DD.MM.YY)
-                        if (i === 0 && /^\d{1,2}\.\d{1,2}/.test(cellText)) {
-                            date = cellText;
-                        }
-                        
-                        // Размер (содержит цифры и B, KB, MB, GB, TB)
-                        if (/\d+(\.\d+)?\s*[KMGT]?B/i.test(cellText) && size === 'N/A') {
-                            size = cellText;
-                        }
-                        
-                        // Сиды и личи (только цифры, обычно в конце таблицы)
-                        if (/^\d+$/.test(cellText)) {
-                            // Пытаемся определить, это сиды или личи по позиции
-                            if (seeds === '0') {
-                                seeds = cellText;
-                            } else if (leech === '0' && cellText !== seeds) {
-                                leech = cellText;
-                                break; // Обычно личи - последнее число
-                            }
-                        }
-                    }
+                                // 💥 ULTIMATE META
+                                card_class: 'media--poster',
+                                genres: [],
+                                overview: ''
+                            };
+                        });
 
-                    items.push({
-                        title,
-                        magnet,
-                        size: size || 'N/A',
-                        seeds: seeds || '0',
-                        leech: leech || '0',
-                        date: date || 'N/A',
-                        category: categoryName
+                        next({
+                            title: sheet,
+                            results: results,
+                            page: 1,
+                            total_pages: 1
+                        });
+
+                    }, function () {
+                        next({ title: sheet, results: [] });
                     });
 
-                } catch (rowErr) {
-                    // Пропускаем проблемные строки
-                    continue;
+                });
+
+            });
+
+            Lampa.Api.partNext(parts, 3, onSuccess);
+        };
+
+        // =======================
+        // 🎬 FULL (ГЛАВНАЯ МАГИЯ)
+        // =======================
+        this.full = function (params, onSuccess, onError) {
+
+            // 1️⃣ получаем TMDB
+            Lampa.Api.sources.tmdb.full(params, function (data) {
+
+                data.sources = data.sources || [];
+
+                // =======================
+                // 🎥 ДОБАВЛЯЕМ ВСЕ ИСТОЧНИКИ
+                // =======================
+
+                // Filmix
+                data.sources.push({
+                    title: 'Filmix',
+                    url: 'filmix',
+                    quality: 'auto'
+                });
+
+                // Rezka
+                data.sources.push({
+                    title: 'Rezka',
+                    url: 'rezka',
+                    quality: 'auto'
+                });
+
+                // Torrents / TorrServe
+                data.sources.push({
+                    title: 'Torrents',
+                    url: 'torrent',
+                    quality: 'auto'
+                });
+
+                // =======================
+                // 📺 ДЛЯ СЕРИАЛОВ
+                // =======================
+                if (params.type === 'tv') {
+                    data.serial = true;
                 }
-            }
 
-            if (items.length > 0) {
-                log(`✅ Найдено ${items.length} торрентов в таблице ${tableIdx}`);
-                break; // Выходим, если нашли данные в этой таблице
-            }
-        }
+                // =======================
+                // ⭐ АВТОВЫБОР ЛУЧШЕГО
+                // =======================
+                data.sources = data.sources.filter(Boolean);
 
-        if (items.length === 0) {
-            errorLog(`⚠️ Торренты не найдены для категории "${categoryName}"`);
-            // Для отладки выводим структуру страницы
-            log('Первые 500 символов HTML:', html.substring(0, 500));
-        } else {
-            log(`✅ Успешно распаршено ${items.length} торрентов`);
-        }
-        
-    } catch (e) {
-        errorLog('❌ Критическая ошибка парсинга:', e);
-        console.error(e.stack);
+                onSuccess(data);
+
+            }, function () {
+
+                // =======================
+                // 🔄 FALLBACK ЕСЛИ TMDB УПАЛ
+                // =======================
+                onError();
+            });
+        };
     }
 
-    return items;
-}
+    function start() {
+        if (window.ultimate_ready) return;
+        window.ultimate_ready = true;
 
-// ========== ЗАГРУЗКА СТРАНИЦЫ ==========
-async function loadRutorPage(categoryKey) {
-    const cat = CATEGORIES[categoryKey];
-    if (!cat) {
-        errorLog('❌ Неизвестная категория:', categoryKey);
-        return [];
+        var api = new Api();
+        Lampa.Api.sources[SOURCE_NAME] = api;
+
+        $('.menu .menu__list').eq(0).append(
+            $('<li class="menu__item selector"><div class="menu__text">' + SOURCE_NAME + '</div></li>')
+            .on('hover:enter', function () {
+                Lampa.Activity.push({
+                    component: 'category',
+                    source: SOURCE_NAME
+                });
+            })
+        );
     }
 
-    const url = `https://rutor.info${cat.url}`;
-    const proxiedUrl = getProxiedUrl(url);
-    log(`📥 Загрузка: ${url}`);
-    log(`🔗 Прокси URL: ${proxiedUrl}`);
-
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-        const response = await fetch(proxiedUrl, {
-            signal: controller.signal,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache'
-            }
+    if (window.appready) start();
+    else {
+        Lampa.Listener.follow('app', function (e) {
+            if (e.type === 'ready') start();
         });
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status} ${response.statusText}`);
-        }
-
-        // ВАЖНО: Проверяем что ответ - это HTML
-        const contentType = response.headers.get('content-type') || '';
-        if (!contentType.includes('text/html') && !contentType.includes('text/plain')) {
-            log(`⚠️ Неожиданный тип контента: ${contentType}`);
-        }
-
-        // Получаем HTML как СТРОКУ
-        let html = await response.text();
-        
-        if (!html || html.length < 500) {
-            throw new Error(`Получен слишком короткий ответ (${html ? html.length : 0} символов)`);
-        }
-
-        log(`✅ Получено ${html.length} символов HTML`);
-        
-        // Проверяем, не ошибка ли это
-        if (html.includes('403') || html.includes('Forbidden')) {
-            throw new Error('Доступ запрещен (403). Прокси не работает?');
-        }
-        
-        if (html.includes('404') || html.includes('Not Found')) {
-            throw new Error('Страница не найдена (404)');
-        }
-
-        // Теперь парсим HTML-строку
-        return parseRutorPage(html, cat.name);
-
-    } catch (e) {
-        errorLog('❌ Ошибка загрузки:', e.message);
-        
-        let errorMsg = '❌ Ошибка загрузки!';
-        if (e.name === 'AbortError') {
-            errorMsg = '⏱️ Таймаут! Проверьте TorrServer и интернет';
-        } else if (e.message.includes('403')) {
-            errorMsg = '🔒 Доступ запрещен. Включите прокси в настройках!';
-        } else if (e.message.includes('404')) {
-            errorMsg = '🚫 Категория не найдена';
-        } else if (!settings.useProxy) {
-            errorMsg = '🔌 Включите прокси TorrServer в настройках!';
-        }
-        
-        Lampa.Notification.show(errorMsg, 5000);
-        return [];
     }
-}
+
+})();
