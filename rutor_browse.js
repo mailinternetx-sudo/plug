@@ -16,68 +16,83 @@
     function Api() {
         var network = new Lampa.Reguest();
 
+        // 🔥 фикс таймаута (важно для WebOS)
+        network.timeout(15000);
+
         // =======================
-        // 📺 КАТЕГОРИИ
+        // 📺 КАТЕГОРИИ (FIXED)
         // =======================
         this.category = function (params, onSuccess) {
 
-            var parts = [];
+            var results_all = [];
+            var loaded = 0;
 
             SHEETS.forEach(function (sheet) {
 
-                parts.push(function (next) {
+                network.silent(API_URL + '?sheet=' + sheet, function (json) {
 
-                    network.silent(API_URL + '?sheet=' + sheet, function (json) {
+                    var results = (json.results || []).map(function (item) {
+                        return {
+                            id: item.id,
+                            title: item.title,
+                            name: item.title,
+                            poster_path: item.poster_path,
+                            backdrop_path: item.poster_path,
+                            vote_average: item.vote_average || 0,
+                            type: item.type || 'movie',
+                            source: 'tmdb',
 
-                        var results = (json.results || []).map(function (item) {
-
-                            return {
-                                id: item.id, // ✅ TMDB ID
-                                title: item.title,
-                                name: item.title,
-                                poster_path: item.poster_path,
-                                backdrop_path: item.poster_path,
-                                vote_average: item.vote_average || 0,
-                                type: item.type || 'movie',
-                                source: 'tmdb',
-
-                                // 💥 ULTIMATE META
-                                card_class: 'media--poster',
-                                genres: [],
-                                overview: ''
-                            };
-                        });
-
-                        next({
-                            title: sheet,
-                            results: results,
-                            page: 1,
-                            total_pages: 1
-                        });
-
-                    }, function () {
-                        next({ title: sheet, results: [] });
+                            // доп. мета (стабильность UI)
+                            card_class: 'media--poster'
+                        };
                     });
+
+                    results_all.push({
+                        title: sheet,
+                        results: results,
+                        page: 1,
+                        total_pages: 1
+                    });
+
+                    loaded++;
+
+                    if (loaded === SHEETS.length) {
+                        onSuccess(results_all);
+                    }
+
+                }, function () {
+
+                    // если ошибка — не ломаем всё
+                    results_all.push({
+                        title: sheet,
+                        results: [],
+                        page: 1,
+                        total_pages: 1
+                    });
+
+                    loaded++;
+
+                    if (loaded === SHEETS.length) {
+                        onSuccess(results_all);
+                    }
 
                 });
 
             });
-
-            Lampa.Api.partNext(parts, 3, onSuccess);
         };
 
         // =======================
-        // 🎬 FULL (ГЛАВНАЯ МАГИЯ)
+        // 🎬 FULL (ULTIMATE)
         // =======================
         this.full = function (params, onSuccess, onError) {
 
-            // 1️⃣ получаем TMDB
+            // 1️⃣ TMDB карточка
             Lampa.Api.sources.tmdb.full(params, function (data) {
 
                 data.sources = data.sources || [];
 
                 // =======================
-                // 🎥 ДОБАВЛЯЕМ ВСЕ ИСТОЧНИКИ
+                // 🎥 ВСЕ ИСТОЧНИКИ
                 // =======================
 
                 // Filmix
@@ -102,14 +117,14 @@
                 });
 
                 // =======================
-                // 📺 ДЛЯ СЕРИАЛОВ
+                // 📺 СЕРИАЛЫ
                 // =======================
                 if (params.type === 'tv') {
                     data.serial = true;
                 }
 
                 // =======================
-                // ⭐ АВТОВЫБОР ЛУЧШЕГО
+                // 🧹 ЧИСТКА
                 // =======================
                 data.sources = data.sources.filter(Boolean);
 
@@ -117,14 +132,15 @@
 
             }, function () {
 
-                // =======================
-                // 🔄 FALLBACK ЕСЛИ TMDB УПАЛ
-                // =======================
+                // fallback (если TMDB упал)
                 onError();
             });
         };
     }
 
+    // =======================
+    // 🚀 СТАРТ
+    // =======================
     function start() {
         if (window.ultimate_ready) return;
         window.ultimate_ready = true;
