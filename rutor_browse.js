@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var SOURCE_NAME = 'ULTIMATE HYBRID';
+    var SOURCE_NAME = 'AI PRO MAX';
     var API_URL = 'https://script.google.com/macros/s/AKfycbz_5VESAAFFcrD8BB8DJnj1Q-NBdLFLUbphP5SRb07KQ3RHZT_zoeBj8MYZVdEneHC-/exec';
 
     var SHEETS = [
@@ -15,12 +15,65 @@
 
     function Api() {
         var network = new Lampa.Reguest();
-
-        // 🔥 фикс таймаута (важно для WebOS)
         network.timeout(15000);
 
         // =======================
-        // 📺 КАТЕГОРИИ (FIXED)
+        // 🧠 ОЧИСТКА СТРОКИ
+        // =======================
+        function cleanTitle(text) {
+            return (text || '')
+                .toLowerCase()
+                .replace(/\[.*?\]/g, '')
+                .replace(/\(.*?\)/g, '')
+                .replace(/hd|1080p|720p|webrip|hdrip|camrip/gi, '')
+                .replace(/[^a-zа-я0-9\s]/gi, '')
+                .trim();
+        }
+
+        // =======================
+        // 🔢 LEVENSHTEIN
+        // =======================
+        function similarity(a, b) {
+            if (!a || !b) return 0;
+
+            var longer = a.length > b.length ? a : b;
+            var shorter = a.length > b.length ? b : a;
+
+            var same = 0;
+
+            for (var i = 0; i < shorter.length; i++) {
+                if (longer[i] === shorter[i]) same++;
+            }
+
+            return same / longer.length;
+        }
+
+        // =======================
+        // 🧠 ВАРИАНТЫ
+        // =======================
+        function makeTitles(title) {
+
+            var base = cleanTitle(title);
+            var list = [];
+
+            list.push(base);
+
+            // reverse
+            list.push(base.split(' ').reverse().join(' '));
+
+            // remove words one by one
+            var parts = base.split(' ');
+            for (var i = 0; i < parts.length; i++) {
+                list.push(parts.filter((_, j) => j !== i).join(' '));
+            }
+
+            return list.filter(function (v, i, a) {
+                return v && a.indexOf(v) === i;
+            });
+        }
+
+        // =======================
+        // 📺 CATEGORY
         // =======================
         this.category = function (params, onSuccess) {
 
@@ -32,6 +85,7 @@
                 network.silent(API_URL + '?sheet=' + sheet, function (json) {
 
                     var results = (json.results || []).map(function (item) {
+
                         return {
                             id: item.id,
                             title: item.title,
@@ -40,10 +94,7 @@
                             backdrop_path: item.poster_path,
                             vote_average: item.vote_average || 0,
                             type: item.type || 'movie',
-                            source: 'tmdb',
-
-                            // доп. мета (стабильность UI)
-                            card_class: 'media--poster'
+                            source: 'tmdb'
                         };
                     });
 
@@ -55,14 +106,10 @@
                     });
 
                     loaded++;
-
-                    if (loaded === SHEETS.length) {
-                        onSuccess(results_all);
-                    }
+                    if (loaded === SHEETS.length) onSuccess(results_all);
 
                 }, function () {
 
-                    // если ошибка — не ломаем всё
                     results_all.push({
                         title: sheet,
                         results: [],
@@ -71,79 +118,86 @@
                     });
 
                     loaded++;
-
-                    if (loaded === SHEETS.length) {
-                        onSuccess(results_all);
-                    }
-
+                    if (loaded === SHEETS.length) onSuccess(results_all);
                 });
 
             });
         };
 
         // =======================
-        // 🎬 FULL (ULTIMATE)
+        // 🎬 FULL (AI MATCH)
         // =======================
         this.full = function (params, onSuccess, onError) {
 
-            // 1️⃣ TMDB карточка
-            Lampa.Api.sources.tmdb.full(params, function (data) {
+            var original = cleanTitle(params.title || params.name);
+            var titles = makeTitles(params.title || params.name);
 
-                data.sources = data.sources || [];
+            var bestData = null;
+            var bestScore = 0;
 
-                // =======================
-                // 🎥 ВСЕ ИСТОЧНИКИ
-                // =======================
+            function tryNext(i) {
 
-                // Filmix
-                data.sources.push({
-                    title: 'Filmix',
-                    url: 'filmix',
-                    quality: 'auto'
-                });
+                if (i >= titles.length) {
 
-                // Rezka
-                data.sources.push({
-                    title: 'Rezka',
-                    url: 'rezka',
-                    quality: 'auto'
-                });
+                    if (bestData) {
+                        onSuccess(bestData);
+                    } else {
+                        onError();
+                    }
 
-                // Torrents / TorrServe
-                data.sources.push({
-                    title: 'Torrents',
-                    url: 'torrent',
-                    quality: 'auto'
-                });
-
-                // =======================
-                // 📺 СЕРИАЛЫ
-                // =======================
-                if (params.type === 'tv') {
-                    data.serial = true;
+                    return;
                 }
 
-                // =======================
-                // 🧹 ЧИСТКА
-                // =======================
-                data.sources = data.sources.filter(Boolean);
+                var newParams = Object.assign({}, params, {
+                    title: titles[i],
+                    name: titles[i]
+                });
 
-                onSuccess(data);
+                Lampa.Api.sources.tmdb.full(newParams, function (data) {
 
-            }, function () {
+                    var found = cleanTitle(data.title || data.name);
+                    var score = similarity(original, found);
 
-                // fallback (если TMDB упал)
-                onError();
-            });
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestData = data;
+                    }
+
+                    tryNext(i + 1);
+
+                }, function () {
+                    tryNext(i + 1);
+                });
+            }
+
+            tryNext(0);
+
+            // финализация
+            setTimeout(function () {
+
+                if (bestData) {
+
+                    bestData.sources = bestData.sources || [];
+
+                    bestData.sources.push({ title: 'Filmix', url: 'filmix' });
+                    bestData.sources.push({ title: 'Rezka', url: 'rezka' });
+                    bestData.sources.push({ title: 'Torrents', url: 'torrent' });
+
+                    if (params.type === 'tv') bestData.serial = true;
+
+                    onSuccess(bestData);
+
+                } else {
+                    onError();
+                }
+
+            }, 2000);
         };
     }
 
-    // =======================
-    // 🚀 СТАРТ
-    // =======================
     function start() {
-        if (window.ultimate_ready) return;
-        window.ultimate_ready = true;
+        if (window.ai_pro_max_ready) return;
+        window.ai_pro_max_ready = true;
 
         var api = new Api();
         Lampa.Api.sources[SOURCE_NAME] = api;
