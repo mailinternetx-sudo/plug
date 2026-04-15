@@ -2,7 +2,7 @@
     'use strict';
 
     var SOURCE_NAME = 'ULTIMATE FILMIX AI';
-    var API_URL = 'https://script.google.com/macros/s/AKfycbywpgAG4_emjq-KJb81ZE5-C9nqLYKi0UoD0d5LKBirGLNwX0rLaNulsBSyyypzwwza/exec';
+    var API_URL = 'https://script.google.com/macros/s/AKfycbyfaTd43bLjpj0fgICwORZb1o-ibPhZqNN7Xpc87Hy1YDmHIlh0-Xq5tNwmnnmkwmLF/exec';
 
     var SHEETS = [
         'Топ 24ч',
